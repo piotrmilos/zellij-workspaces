@@ -97,6 +97,126 @@ workspaces:
     description: Project description
 ```
 
+## Editor Integration
+
+### VSCode / Cursor
+
+Add to `.vscode/tasks.json`:
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ws: Open Workspace",
+      "type": "shell",
+      "command": "ws open ${input:workspaceName}",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ws: Open Workspace (Fresh)",
+      "type": "shell",
+      "command": "ws open ${input:workspaceName} --fresh",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ws: New Workspace",
+      "type": "shell",
+      "command": "ws new ${input:workspaceName}",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ws: Dashboard",
+      "type": "shell",
+      "command": "ws dashboard",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "ws: List",
+      "type": "shell",
+      "command": "ws list",
+      "presentation": { "reveal": "always" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "workspaceName",
+      "type": "promptString",
+      "description": "Workspace name"
+    }
+  ]
+}
+```
+
+Add to `.vscode/keybindings.json` (user keybindings):
+```json
+[
+  { "key": "ctrl+shift+w o", "command": "workbench.action.tasks.runTask", "args": "ws: Open Workspace" },
+  { "key": "ctrl+shift+w n", "command": "workbench.action.tasks.runTask", "args": "ws: New Workspace" },
+  { "key": "ctrl+shift+w d", "command": "workbench.action.tasks.runTask", "args": "ws: Dashboard" },
+  { "key": "ctrl+shift+w l", "command": "workbench.action.tasks.runTask", "args": "ws: List" }
+]
+```
+
+Add to `.vscode/settings.json` to set the registry path:
+```json
+{
+  "terminal.integrated.env.osx": {
+    "WORKSPACES": "${env:HOME}/workspaces.yaml"
+  },
+  "terminal.integrated.env.linux": {
+    "WORKSPACES": "${env:HOME}/workspaces.yaml"
+  }
+}
+```
+
+### Zellij Layout
+
+Add a dedicated workspace pane to your zellij layout (`~/.config/zellij/layouts/default.kdl`):
+```kdl
+layout {
+    pane split_direction="vertical" {
+        pane size="70%"
+        pane split_direction="horizontal" {
+            pane name="dashboard" command="ws" {
+                args "dashboard"
+            }
+            pane name="terminal"
+        }
+    }
+}
+```
+
+### Fish Shell
+
+Add to `~/.config/fish/config.fish`:
+```fish
+set -gx WORKSPACES ~/workspaces.yaml
+
+# Abbreviations for quick access
+abbr -a wso 'ws open'
+abbr -a wsn 'ws new'
+abbr -a wsl 'ws list'
+abbr -a wsd 'ws dashboard'
+```
+
+### Bash/Zsh
+
+Add to `~/.bashrc` or `~/.zshrc`:
+```bash
+export WORKSPACES=~/workspaces.yaml
+
+# Aliases for quick access
+alias wso='ws open'
+alias wsn='ws new'
+alias wsl='ws list'
+alias wsd='ws dashboard'
+```
+
 ## License
 
 MIT
