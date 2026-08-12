@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""ws-dashboard: Live workspace status tree with rich."""
+
+import json
+import os
+import re
+import select
+import subprocess
+import sys
+import termios
+import time
+import tty
+from pathlib import Path
+
+try:
+    import yaml
+    from rich.console import Console
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.tree import Tree
+except ImportError:
+    print("Missing dependencies. Install with:")
+    print("  pip install rich pyyaml")
+    exit(1)
+
+# Config
+REGISTRY_FILE = Path(os.environ.get("WORKSPACES", Path.home() / "workspaces.yaml"))
+POLL_INTERVAL = 0.5  # seconds
+
+# Spinner chars from Claude Code
+SPINNER_CHARS = set("*")
+
+
+def load_registry() -> list:
+    """Load workspaces from registry."""
+    if not REGISTRY_FILE.exists():
+        return []
+    with open(REGISTRY_FILE) as f:
+        return yaml.safe_load(f) or []
+
+
+def get_panes() -> dict:
+    """Get all zellij panes as dict keyed by workspace name.
+
+    Detection is based on pane title pattern only. The status detection
+    (Running/Waiting/Idle) uses screen content to determine if Claude is active.
+    """
+    try:
+        result = subprocess.run(
+            ["zellij", "action", "list-panes", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            panes = json.loads(result.stdout)
+            pane_map = {}
+            for p in panes:
+                title = p.get("title", "")
+                # Extract workspace name from "~~~ Workspace: name ~~~"
+                if title.startswith("~~~ Workspace: ") and title.endswith(" ~~~"):
+                    name = title[15:-4]  # Strip prefix and suffix
+                    pane_map[name] = p
+            return pane_map
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+        pass
+    return {}
+
+
+def dump_pane_screen(pane_id: int) -> str:
+    """Dump pane content for status detection."""
+    try:
+        result = subprocess.run(
+            ["zellij", "action", "dump-screen", "--pane-id", f"terminal_{pane_id}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return ""
+
+
+def detect_claude_status(content: str) -> str:
+    """Detect Claude Code status from pane content.
+
+    Based on AoE's src/tmux/status_detection.rs logic.
+    """
+    if not content:
+        return "Unknown"
+
+    # Strip ANSI escape codes
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", content)
+    clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", clean)
+
+    # Get last 30 non-empty lines
+    lines = [line for line in clean.split("\n") if line.strip()]
+    recent = lines[-30:]
+    text = "\n".join(recent)
+    text_lower = text.lower()
+
+    # Collapse whitespace for footer detection
+    collapsed = " ".join(text_lower.split())
+
+    # 1. Check WAITING signals first (they block on user input)
+
+    # Approval prompt: "do you want to" + numbered choice
+    if "do you want to" in text_lower or "would you like to proceed" in text_lower:
+        if any(re.match(r"\s*\d+\.", line) for line in recent):
+            return "Waiting"
+
+    # AskUserQuestion: interactive selection menu
+    if "enter to select" in text_lower and "/" in text:
+        if any(re.match(r"\s*>?\s*\d+\.", line) for line in recent):
+            return "Waiting"
+
+    # 2. Check RUNNING signals
+
+    # Interrupt hint in footer
+    if "esc to interrupt" in collapsed or "ctrl+c to interrupt" in collapsed:
+        return "Running"
+
+    # Live token counter: (Ns . N tokens)
+    if re.search(r"\(\d+s [^)]*\d+ tokens\)", text):
+        return "Running"
+
+    # Active spinner: <frame> <Verb>... (with ellipsis)
+    for line in recent:
+        trimmed = line.lstrip()
+        if trimmed and trimmed[0] in SPINNER_CHARS:
+            rest = trimmed[1:].lstrip()
+            words = rest.split()[:2]
+            # Check for ellipsis character or ...
+            if any("..." in w or "..." in w for w in words):
+                if words and words[0] and words[0][0].isupper():
+                    return "Running"
+
+    # Background agent wait line
+    if re.search(r"waiting for \d+ background agent", text_lower):
+        if "to finish" in text_lower:
+            return "Running"
+
+    # 3. Default to IDLE
+    return "Idle"
+
+
+def status_icon(status: str, is_open: bool, is_done: bool) -> str:
+    """Return colored status icon."""
+    if is_done:
+        return "[cyan]v[/cyan]"
+    if not is_open:
+        return "[dim]-[/dim]"
+    icons = {
+        "Running": "[green bold]*[/green bold]",
+        "Waiting": "[red bold]![/red bold]",
+        "Idle": "[dim]o[/dim]",
+        "Unknown": "[dim]?[/dim]",
+    }
+    return icons.get(status, "[dim]?[/dim]")
+
+
+def build_tree(workspaces: list, panes: dict) -> Tree:
+    """Build rich Tree from workspaces."""
+    tree = Tree("[bold]Workspaces[/bold]")
+
+    if not workspaces:
+        tree.add("[dim]No workspaces registered[/dim]")
+        tree.add("[dim]Use: ws new <name> --in <dir>[/dim]")
+        return tree
+
+    # Build parent -> children map
+    children_map: dict[str, list] = {}
+    roots = []
+    for ws in workspaces:
+        parent = ws.get("parent")
+        if parent:
+            children_map.setdefault(parent, []).append(ws)
+        else:
+            roots.append(ws)
+
+    def add_workspace(parent_node, ws):
+        name = ws.get("name", "?")
+        desc = ws.get("desc", "")
+        tags = ws.get("tags", [])
+        container = ws.get("container", {}).get("image", "")
+        worktree = ws.get("worktree", {}).get("branch", "")
+
+        is_done = "done" in tags
+        pane = panes.get(name)
+        is_open = pane is not None
+
+        if is_done:
+            status = "Done"
+        elif is_open:
+            content = dump_pane_screen(pane["id"])
+            status = detect_claude_status(content)
+        else:
+            status = "Closed"
+
+        icon = status_icon(status, is_open, is_done)
+
+        # Build suffix indicators
+        suffix = ""
+        if container:
+            suffix += " [blue]D[/blue]"  # Docker
+        if worktree:
+            safe_branch = worktree[:20] + "..." if len(worktree) > 20 else worktree
+            suffix += f" [magenta]W:{safe_branch}[/magenta]"
+
+        # Build label
+        if is_open:
+            status_text = f"[green]{status}[/green]" if status == "Running" else (
+                f"[red bold]{status}[/red bold]" if status == "Waiting" else f"[dim]{status}[/dim]"
+            )
+            label = f"{icon} [bold]{name}[/bold] {status_text}{suffix}"
+            if desc:
+                label += f" [dim]- {desc}[/dim]"
+        elif is_done:
+            label = f"{icon} [dim]{name}[/dim] [cyan]Done[/cyan]{suffix}"
+            if desc:
+                label += f" [dim]- {desc}[/dim]"
+        else:
+            label = f"{icon} [dim]{name} (closed){suffix}[/dim]"
+            if desc:
+                label += f" [dim]- {desc}[/dim]"
+
+        node = parent_node.add(label)
+
+        # Add children recursively
+        for child in children_map.get(name, []):
+            add_workspace(node, child)
+
+    # Add root workspaces
+    for ws in roots:
+        add_workspace(tree, ws)
+
+    # Add orphaned children (parent not found)
+    all_names = {ws.get("name") for ws in workspaces}
+    for ws in workspaces:
+        parent = ws.get("parent")
+        if parent and parent not in all_names:
+            add_workspace(tree, ws)
+
+    return tree
+
+
+def build_help() -> str:
+    """Build help text."""
+    return "[dim]q = quit | Ctrl+C = quit[/dim]"
+
+
+def check_for_quit() -> bool:
+    """Check if 'q' was pressed (non-blocking)."""
+    try:
+        if select.select([sys.stdin], [], [], 0)[0]:
+            ch = sys.stdin.read(1)
+            return ch.lower() == "q"
+    except Exception:
+        pass
+    return False
+
+
+def main():
+    console = Console()
+
+    # Check zellij
+    try:
+        subprocess.run(["zellij", "--version"], capture_output=True, timeout=2)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        console.print("[red]Error:[/red] zellij not found or not responding")
+        return
+
+    # Set terminal to raw mode for single-char input (if TTY available)
+    is_tty = sys.stdin.isatty()
+    old_settings = None
+
+    if is_tty:
+        try:
+            old_settings = termios.tcgetattr(sys.stdin)
+            tty.setcbreak(sys.stdin.fileno())
+        except Exception:
+            is_tty = False
+
+    try:
+        with Live(console=console, refresh_per_second=2, screen=False) as live:
+            while True:
+                workspaces = load_registry()
+                panes = get_panes()
+                tree = build_tree(workspaces, panes)
+
+                # Count stats
+                total = len(workspaces)
+                active = sum(1 for ws in workspaces if "active" in ws.get("tags", []))
+                open_count = sum(1 for ws in workspaces if ws.get("name") in panes)
+
+                # Build panel
+                panel = Panel(
+                    tree,
+                    title=f"[bold]~~~ Workspaces ({open_count} open / {active} active / {total} total) ~~~[/bold]",
+                    subtitle=build_help(),
+                    border_style="blue",
+                )
+
+                live.update(panel)
+
+                # Check for quit every 0.05s for responsiveness
+                for _ in range(int(POLL_INTERVAL * 20)):
+                    if is_tty and check_for_quit():
+                        return
+                    time.sleep(0.05)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if old_settings:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+        console.print("[dim]Dashboard closed[/dim]")
+
+
+if __name__ == "__main__":
+    main()
