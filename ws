@@ -258,6 +258,12 @@ Key decisions and approach...
 ## Results
 *To be filled in*
 
+## Analysis plan
+*What plots/comparisons to produce*
+
+## Progress
+- [ ] ...
+
 ## Log
 ### $(date +%Y-%m-%d): Created
 - Workspace initialized
@@ -555,7 +561,7 @@ cmd_list() {
         printf "%s%b %s%b - %s%s\n" \
             "$indent" "$status_icon" "$name" "${NC}" "$desc" "$suffix"
 
-        ((count++))
+        ((count++)) || true
     done < <(get_workspaces)
 
     if [[ $count -eq 0 ]]; then
@@ -567,7 +573,7 @@ cmd_list() {
 cmd_dashboard() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local dashboard_script="$script_dir/ws-dashboard.py"
+    local dashboard_script="$script_dir/ws-dashboard"
     local venv_python="$script_dir/.venv/bin/python"
 
     if [[ ! -f "$dashboard_script" ]]; then
@@ -671,6 +677,153 @@ cmd_status() {
     fi
 }
 
+# Add a ping to a workspace
+cmd_ping() {
+    local name=""
+    local due=""
+    local task=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --due)
+                due="$2"
+                shift 2
+                ;;
+            --task)
+                task="$2"
+                shift 2
+                ;;
+            -*)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+            *)
+                if [[ -z "$name" ]]; then
+                    name="$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    if [[ -z "$name" || -z "$due" || -z "$task" ]]; then
+        echo "Usage: ws ping <name> --due \"2026-07-10T22:00\" --task \"Check results\"" >&2
+        exit 1
+    fi
+
+    WS_REGISTRY="$REGISTRY_FILE" WS_NAME="$name" WS_DUE="$due" WS_TASK="$task" python3 -c '
+import yaml
+import os
+
+registry_file = os.environ["WS_REGISTRY"]
+name = os.environ["WS_NAME"]
+due = os.environ["WS_DUE"]
+task = os.environ["WS_TASK"]
+
+with open(registry_file) as f:
+    data = yaml.safe_load(f) or []
+
+found = False
+for ws in data:
+    if ws.get("name") == name:
+        found = True
+        if "pings" not in ws:
+            ws["pings"] = []
+        ws["pings"].append({"due": due, "task": task})
+        break
+
+if not found:
+    print(f"Error: workspace {name} not found")
+    exit(1)
+
+with open(registry_file, "w") as f:
+    yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+print(f"Ping added: {task} (due {due})")
+'
+}
+
+# Check for due/overdue pings
+cmd_check_pings() {
+    WS_REGISTRY="$REGISTRY_FILE" python3 -c '
+import yaml
+import os
+from datetime import datetime
+
+registry_file = os.environ["WS_REGISTRY"]
+
+with open(registry_file) as f:
+    data = yaml.safe_load(f) or []
+
+now = datetime.now()
+due_pings = []
+for ws in data:
+    name = ws.get("name", "")
+    for ping in ws.get("pings", []):
+        if ping.get("done"):
+            continue
+        try:
+            due = datetime.fromisoformat(ping["due"])
+        except (ValueError, KeyError):
+            continue
+        if due <= now:
+            overdue = "OVERDUE" if due < now.replace(hour=0, minute=0, second=0) else "DUE TODAY"
+            due_pings.append((overdue, name, ping["due"], ping["task"]))
+
+if not due_pings:
+    print("No pings due.")
+else:
+    for status, name, due, task in sorted(due_pings, key=lambda x: x[2]):
+        print(f"  [{status}] {name}: {task} (due {due})")
+'
+}
+
+# Generate mermaid graph of workspace relationships
+cmd_graph() {
+    local output="${1:-}"
+
+    WS_REGISTRY="$REGISTRY_FILE" python3 -c '
+import yaml
+import os
+
+registry_file = os.environ["WS_REGISTRY"]
+
+with open(registry_file) as f:
+    data = yaml.safe_load(f) or []
+
+lines = ["graph TD"]
+for ws in data:
+    name = ws.get("name", "")
+    tags = ws.get("tags", [])
+    parent = ws.get("parent")
+    desc = ws.get("desc", "")
+
+    # Node shape based on status
+    if "done" in tags:
+        label = f"    {name}[/{name}/]"
+    else:
+        label = f"    {name}[{name}]"
+    lines.append(label)
+
+    # Edge from parent
+    if parent:
+        lines.append(f"    {parent} --> {name}")
+
+mermaid = "\n".join(lines)
+print(mermaid)
+' | if [[ -n "$output" ]]; then
+        {
+            echo "# Workspaces Graph"
+            echo
+            echo '```mermaid'
+            cat
+            echo '```'
+        } > "$output"
+        echo -e "${GREEN}Graph written to:${NC} $output"
+    else
+        cat
+    fi
+}
+
 # Print usage
 usage() {
     cat << 'EOF'
@@ -686,6 +839,9 @@ Usage:
   ws dashboard
   ws edit <name>
   ws add <name> <path> [desc]
+  ws ping <name> --due <datetime> --task "..."
+  ws check-pings
+  ws graph [output.md]
 
 Options for 'open':
   --fresh   Start new Claude session (not continue)
@@ -700,6 +856,9 @@ Examples:
   ws open feature-x --docker node:20  # Run in node container
   ws list --active
   ws done feature-x
+  ws ping feature-x --due "2026-07-10T22:00" --task "Check if experiment finished"
+  ws check-pings
+  ws graph workspaces_graph.md
 EOF
 }
 
@@ -718,6 +877,9 @@ main() {
         dashboard) cmd_dashboard "$@" ;;
         edit)     cmd_edit "$@" ;;
         add)      cmd_add "$@" ;;
+        ping)     cmd_ping "$@" ;;
+        check-pings) cmd_check_pings "$@" ;;
+        graph)    cmd_graph "$@" ;;
         -h|--help|help|"")
             usage
             ;;

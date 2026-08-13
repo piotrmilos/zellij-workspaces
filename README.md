@@ -82,20 +82,33 @@ ws close <name>      # Mark workspace as closed
 ws done <name>       # Mark workspace as done
 ws edit <name>       # Edit workspace doc
 ws add <name> <dir>  # Add existing directory as workspace
+ws ping <name> --due "2026-07-10T22:00" --task "Check results"
+ws check-pings       # Show due/overdue pings
+ws graph [out.md]    # Generate mermaid graph of workspace tree
 ```
 
 ## Registry Format
 
-The `workspaces.yaml` file:
+The `workspaces.yaml` file is a YAML list:
 ```yaml
-workspaces:
-  my-project:
-    doc: ~/workspaces/my-project/WORKSPACE.md
-    dir: ~/workspaces/my-project
-    status: active
-    parent: null
-    description: Project description
+- name: my-project
+  desc: Project description
+  path: ~/workspaces/my-project/my-project_workspace.md
+  tags: [active]
+  parent: other-project  # optional — omit for top-level workspaces
+  pings:                 # optional — timed reminders
+    - due: "2026-07-10T22:00"
+      task: "Check if experiment finished"
+    - due: "2026-07-11T10:00"
+      task: "Compare eval scores"
+      done: true
 ```
+
+## Claude Code Skill
+
+The installer places a [Claude Code skill](https://docs.anthropic.com/en/docs/claude-code/skills) at `~/.claude/skills/workspaces/SKILL.md`. This teaches Claude Code how to find, create, update, and archive workspaces using the `ws` CLI, and automatically checks for overdue pings when invoked.
+
+Trigger it with `/workspaces` in Claude Code, or it activates automatically when you ask about workstreams or workspaces.
 
 ## Editor Integration
 

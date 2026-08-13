@@ -32,6 +32,13 @@ exec "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/ws-dashboard" "\$@"
 EOF
 chmod +x "$INSTALL_DIR/ws-dashboard"
 
+# Install Claude Code skill
+SKILL_DIR="$HOME/.claude/skills/workspaces"
+mkdir -p "$SKILL_DIR"
+cp "$SCRIPT_DIR/skill/SKILL.md" "$SKILL_DIR/SKILL.md"
+echo "Installed Claude Code skill to $SKILL_DIR"
+
+echo ""
 echo "Done! Make sure $INSTALL_DIR is in your PATH."
 echo ""
 echo "Usage:"
