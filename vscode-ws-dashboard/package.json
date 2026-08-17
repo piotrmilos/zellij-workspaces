@@ -1,0 +1,100 @@
+{
+  "name": "ws-dashboard",
+  "displayName": "Workspace Dashboard",
+  "description": "Sidebar dashboard for zellij-workspaces: tree view, status bar, and quick doc access",
+  "version": "0.1.0",
+  "publisher": "pmilos",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ws-dashboard",
+          "title": "Workspaces",
+          "icon": "$(layers)"
+        }
+      ]
+    },
+    "views": {
+      "ws-dashboard": [
+        {
+          "id": "workspacesTree",
+          "name": "Workspaces"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ws-dashboard.refresh",
+        "title": "Refresh Workspaces",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ws-dashboard.openDoc",
+        "title": "Open Workspace Doc"
+      },
+      {
+        "command": "ws-dashboard.filterActive",
+        "title": "Show Active",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "ws-dashboard.filterAll",
+        "title": "Show All",
+        "icon": "$(list-flat)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ws-dashboard.refresh",
+          "when": "view == workspacesTree",
+          "group": "navigation"
+        },
+        {
+          "command": "ws-dashboard.filterActive",
+          "when": "view == workspacesTree && ws-dashboard.filter != 'active'",
+          "group": "navigation"
+        },
+        {
+          "command": "ws-dashboard.filterAll",
+          "when": "view == workspacesTree && ws-dashboard.filter != 'all'",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Workspace Dashboard",
+      "properties": {
+        "wsDashboard.registryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to workspaces.yaml. Defaults to ~/workspaces.yaml"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}
