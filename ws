@@ -137,21 +137,22 @@ with open(registry_file, "w") as f:
 
 # Get zellij panes as name|id pairs
 get_panes() {
-    if ! command -v zellij &>/dev/null; then
+    if ! command -v zellij &>/dev/null || [[ -z "${ZELLIJ_SESSION_NAME:-}" ]]; then
         return
     fi
 
     # Try to get panes, fail silently if not in zellij session
-    zellij action list-panes --json 2>/dev/null | \
+    timeout 2 zellij action list-panes --json 2>/dev/null | \
         python3 -c '
-import json
-import sys
+import json, sys, re
 try:
     data = json.load(sys.stdin)
     for pane in data:
         title = pane.get("title", "")
         pane_id = pane.get("id", 0)
-        print(f"{title}|{pane_id}")
+        m = re.match(r"~+ Workspace: (.+?) ~+", title)
+        if m:
+            print(f"{m.group(1)}|{pane_id}")
 except:
     pass
 ' 2>/dev/null || true
@@ -365,7 +366,7 @@ cmd_open() {
         echo ""
     }
 
-    local pane_title="~~~ Workspace: $name ~~~"
+    local pane_title="~~~~~~~~~~~~~~~ Workspace: $name ~~~~~~~~~~~~~~~"
 
     if [[ -n "$container" ]]; then
         local container_name="ws-sandbox-$name"
@@ -452,7 +453,13 @@ for p in json.load(sys.stdin):
 
             zellij action rename-pane "$pane_title" 2>/dev/null || true
             [[ "$fresh" == "true" ]] && show_fresh_hint
-            claude ${claude_args[@]+"${claude_args[@]}"}
+            if ! claude ${claude_args[@]+"${claude_args[@]}"} && [[ "$fresh" != "true" ]]; then
+                echo -e "${YELLOW}No session to continue — starting fresh${NC}"
+                local fresh_args=()
+                [[ "$skip_perms" == "true" ]] && fresh_args+=("--dangerously-skip-permissions")
+                show_fresh_hint
+                claude ${fresh_args[@]+"${fresh_args[@]}"}
+            fi
             # Cleanup runs via trap
         fi
     fi
